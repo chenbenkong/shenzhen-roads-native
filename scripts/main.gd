@@ -1,4 +1,4 @@
-﻿## 入口：加载城市数据 → 程序化图集与材质 → 分块世界 → 驾驶主循环
+## 入口：加载城市数据 → 程序化图集与材质 → 分块世界 → 驾驶主循环
 ##
 ## 按键：W/↑ 油门、S/↓ 刹车倒车、A/D/←/→ 转向、空格 手刹、
 ##       C 切视角、R 换车、M 昼夜、F3 调试信息、Esc 释放/捕获鼠标
@@ -137,6 +137,10 @@ func _ready() -> void:
 	input.set_mouse_captured(true)
 	var args := OS.get_cmdline_user_args()
 	_autodrive = args.has("autodrive")
+	# 命令行覆盖渲染缩放：`-- scale=0.6`（用于性能实测与低配机预设）
+	for a in args:
+		if str(a).begins_with("scale="):
+			get_viewport().scaling_3d_scale = clampf(float(str(a).substr(6)), 0.4, 1.0)
 	# nofx：关掉行人 / 车流，用于帧率基线对比
 	if args.has("nofx"):
 		peds.queue_free()
