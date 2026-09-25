@@ -4,8 +4,8 @@
 class_name SkyRig
 extends Node3D
 
-const SUN_ENERGY_DAY := 1.15
-const SUN_ENERGY_NIGHT := 0.10
+const SUN_ENERGY_DAY := 1.55
+const SUN_ENERGY_NIGHT := 0.14
 
 var env: WorldEnvironment
 var sun: DirectionalLight3D
@@ -19,12 +19,12 @@ var day_length := 240.0
 
 var _night := 0.0
 
-var _top_day := Color(0.29, 0.47, 0.79)
-var _top_night := Color(0.035, 0.05, 0.10)
-var _horizon_day := Color(0.72, 0.80, 0.90)
-var _horizon_night := Color(0.07, 0.09, 0.15)
-var _sun_day := Color(1.0, 0.96, 0.90)
-var _sun_low := Color(1.0, 0.62, 0.36)
+var _top_day := Color(0.235, 0.435, 0.78)
+var _top_night := Color(0.045, 0.062, 0.115)
+var _horizon_day := Color(0.70, 0.80, 0.93)
+var _horizon_night := Color(0.085, 0.105, 0.165)
+var _sun_day := Color(1.0, 0.965, 0.90)
+var _sun_low := Color(1.0, 0.60, 0.34)
 
 
 func _ready() -> void:
@@ -44,13 +44,13 @@ func _ready() -> void:
 	e.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
 	e.ambient_light_sky_contribution = 1.0
 	e.tonemap_mode = Environment.TONE_MAPPER_FILMIC
-	e.tonemap_exposure = 1.0
+	e.tonemap_exposure = 1.1
 	e.tonemap_white = 6.0
-	# 远景雾：掩盖 LOD 切换与地平线，让城市有纵深
+	# 远景雾：掩盖 LOD 切换与地平线，让城市有纵深（起雾点退远一些，近处保持通透）
 	e.fog_enabled = true
 	e.fog_mode = Environment.FOG_MODE_DEPTH
-	e.fog_depth_begin = 900.0
-	e.fog_depth_end = 5200.0
+	e.fog_depth_begin = 1150.0
+	e.fog_depth_end = 6200.0
 	e.fog_density = 1.0
 	env.environment = e
 	add_child(env)
@@ -103,10 +103,12 @@ func _apply() -> void:
 	sky.sky_horizon_color = _horizon_day.lerp(_horizon_night, _night)
 	sky.ground_bottom_color = sky.sky_top_color.darkened(0.45)
 	sky.ground_horizon_color = sky.sky_horizon_color.darkened(0.2)
-	sky.sky_energy_multiplier = lerpf(1.0, 0.55, _night)
+	sky.sky_energy_multiplier = lerpf(1.0, 0.72, _night)
 
 	var e := env.environment
-	e.ambient_light_energy = lerpf(1.0, 0.42, _night)
-	e.fog_light_color = sky.sky_horizon_color.lerp(Color(0.55, 0.60, 0.68), 0.35)
-	e.fog_light_energy = lerpf(1.0, 0.35, _night)
-	e.tonemap_exposure = lerpf(1.0, 1.25, _night)
+	# 白天适当压低环境光（让太阳方向性更明显、明暗对比更强）；
+	# 夜间不要压太狠 —— 城市有大量环境光污染，纯黑反而假
+	e.ambient_light_energy = lerpf(0.74, 0.72, _night)
+	e.fog_light_color = sky.sky_horizon_color.lerp(Color(0.52, 0.57, 0.65), 0.32)
+	e.fog_light_energy = lerpf(0.9, 0.55, _night)
+	e.tonemap_exposure = lerpf(1.12, 1.06, _night)

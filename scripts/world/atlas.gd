@@ -632,15 +632,16 @@ func _pavement() -> void:
 
 ## 12 草地：深浅绿噪声 + 土黄斑块 + 细密草纹
 func _grass() -> void:
-	var g1 := rgb(74, 94, 54)
-	var g2 := rgb(58, 76, 42)
-	var g3 := rgb(94, 112, 66)
+	# 偏灰的橄榄绿：城市里的草地不该是荧光绿，尤其它还是分块底铺的主色
+	var g1 := rgb(72, 84, 58)
+	var g2 := rgb(56, 68, 46)
+	var g3 := rgb(86, 98, 66)
 	clear()
 	fill(g1)
 	for i in 9:
-		rgrad(rnd() * SIZE, rnd() * SIZE, 12.0 + rnd() * 24.0, rgba(58, 76, 42, 0.5), rgba(58, 76, 42, 0.0))
+		rgrad(rnd() * SIZE, rnd() * SIZE, 12.0 + rnd() * 24.0, rgba(52, 62, 42, 0.5), rgba(52, 62, 42, 0.0))
 	for i in 7:
-		rgrad(rnd() * SIZE, rnd() * SIZE, 10.0 + rnd() * 18.0, rgba(94, 112, 66, 0.4), rgba(94, 112, 66, 0.0))
+		rgrad(rnd() * SIZE, rnd() * SIZE, 10.0 + rnd() * 18.0, rgba(88, 102, 68, 0.4), rgba(88, 102, 68, 0.0))
 	for i in 4:
 		rgrad(rnd() * SIZE, rnd() * SIZE, 7.0 + rnd() * 12.0, rgba(136, 120, 74, 0.26), rgba(136, 120, 74, 0.0))
 	for i in 700:

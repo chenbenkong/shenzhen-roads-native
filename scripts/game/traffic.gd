@@ -69,7 +69,8 @@ func setup(data: CityData) -> void:
 		mmi.name = "traffic_%s" % spec.id
 		mmi.multimesh = mm
 		# 显式给顶点色材质：既保证 glb 自带的顶点色参与着色，也让 MultiMesh 的 instance color 能整体换色
-		mmi.material_override = AssetUtil.vertex_color_material(0.42, 0.12)
+		# 车漆要有点光泽（roughness 低 + 金属度略高），否则车看起来像水泥块
+		mmi.material_override = AssetUtil.vertex_color_material(0.30, 0.22)
 		mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		add_child(mmi)
 		_mms.append(mm)
