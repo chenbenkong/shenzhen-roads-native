@@ -1,0 +1,13 @@
+# Godot 4 缓存与导出产物
+.godot/
+build/
+release/
+tmp/
+
+# Node（只用于 tools/ 下的资产转换脚本）
+node_modules/
+package-lock.json
+
+# 系统
+Thumbs.db
+.DS_Store

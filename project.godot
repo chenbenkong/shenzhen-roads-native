@@ -1,0 +1,36 @@
+; 深城纪 · 一路向海 —— Godot 4 原生版项目配置
+; 渲染器选 GL Compatibility：核显笔记本覆盖面最广（OpenGL 3.3 起），本场景以静态合批几何为主，开销极低
+config_version=5
+
+[application]
+
+config/name="深城纪 · 一路向海"
+config/description="深圳真实路网开放世界驾驶（原生版）"
+run/main_scene="res://scenes/main.tscn"
+config/features=PackedStringArray("4.7", "GL Compatibility")
+config/icon="res://icon.svg"
+boot_splash/show_image=false
+
+[display]
+
+window/size/viewport_width=1600
+window/size/viewport_height=900
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+; VSync 关闭：部分驱动（尤其核显 + 远程会话）会把帧率锁到刷新率的一半，观感像掉帧
+; 帧率上限交给游戏内的画质系统与显示器自身处理
+window/vsync/vsync_mode=0
+
+[physics]
+
+common/physics_ticks_per_second=60
+
+[rendering]
+
+; mobile = Vulkan 上最省的渲染器（核显友好）；不支持 Vulkan 的机器由 Godot 自动回退 OpenGL
+; 实测同一台 AMD 核显：Vulkan 157 FPS vs OpenGL 7.7 FPS（1280×720 / 100 draw call）
+renderer/rendering_method="mobile"
+renderer/rendering_method.mobile="mobile"
+renderer/rendering_device/fallback_to_opengl3=true
+textures/default_filters/anisotropic_filtering_level=2
+anti_aliasing/quality/msaa_3d=0

@@ -1,0 +1,14 @@
+[gd_scene load_steps=2 format=3]
+
+[sub_resource type="GDScript" id="GDScript_testdata"]
+script/source = "extends Node
+# 场景入口：Godot 不允许把 extends SceneTree 的脚本挂到 Node 上，
+# 所以这里只做一层薄转发，真正的自检逻辑在 res://scripts/test_data.gd 的静态 run_all()。
+const T := preload(\"res://scripts/test_data.gd\")
+
+func _ready() -> void:
+	get_tree().quit(T.run_all())
+"
+
+[node name="TestData" type="Node"]
+script = SubResource("GDScript_testdata")
