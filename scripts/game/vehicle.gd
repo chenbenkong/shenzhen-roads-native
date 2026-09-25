@@ -46,6 +46,10 @@ var impact := 0.0
 ## 车轮对地是否打滑（烧胎）
 var wheel_slip := 0.0
 
+## 引擎强化倍率（作弊菜单的「引擎强化」；1.0 为原厂性能）
+var boost_accel := 1.0
+var boost_top := 1.0
+
 var _collider := {"x": 0.0, "z": 0.0, "nx": 0.0, "nz": 0.0}
 var _last_long_speed := 0.0
 
@@ -152,13 +156,13 @@ func update(dt: float, data: CityData, throttle: float, brake: float, steer: flo
 
 	# ── 纵向受力 ──
 	var accel := 0.0
-	var max_speed := spec.max_speed
+	var max_speed := spec.max_speed * boost_top
 	var speed_n := clampf(absf(v_long) / max_speed, 0.0, 1.0)
 	if not started:
 		pass  # 熄火：只有滚阻
 	elif throttle > 0.01:
 		# 高速乏力：接近极速时功率下降
-		accel += throttle * spec.accel * (1.0 - 0.62 * speed_n * speed_n)
+		accel += throttle * spec.accel * boost_accel * (1.0 - 0.62 * speed_n * speed_n)
 		wheel_slip = 1.0 - speed_n / 0.28 if speed_n < 0.28 else 0.0
 	else:
 		wheel_slip = 0.0

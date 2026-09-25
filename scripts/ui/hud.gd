@@ -34,6 +34,13 @@ var px := 0.0
 var pz := 0.0
 var yaw := 0.0
 var extra_hint := ""
+## 通缉星级 0..5 与追捕状态
+var wanted := 0
+var chasing := false
+var escaping := false
+## 导航：航点（世界坐标，Vector2.INF 表示无）与路线折线
+var waypoint := Vector2.INF
+var route := PackedVector2Array()
 
 var _font: Font
 var _panel := StyleBoxFlat.new()
@@ -75,7 +82,28 @@ func _draw() -> void:
 	_draw_speed(w, h)
 	_draw_minimap(w, h)
 	_draw_status(w, h)
+	_draw_wanted(w, h)
 	_draw_notice(w, h)
+
+
+## 右上角：通缉星级（5 个方块）与追捕 / 逃脱提示
+func _draw_wanted(w: float, h: float) -> void:
+	if wanted <= 0 and not chasing:
+		return
+	var seg_w := 30.0
+	var seg_h := 9.0
+	var total := seg_w * 5.0
+	var x0 := w - 26.0 - total
+	var y0 := 24.0
+	for i in 5:
+		var col := GOLD if i < wanted else Color(1.0, 1.0, 1.0, 0.10)
+		draw_rect(Rect2(x0 + float(i) * seg_w, y0, seg_w - 6.0, seg_h), col)
+	var text := "追捕中" if chasing else "通缉"
+	var col2 := Color(0.92, 0.45, 0.40) if chasing else TEXT_DIM
+	if escaping:
+		text = "甩掉他们"
+		col2 = Color(0.55, 0.82, 0.60)
+	draw_string(_font, Vector2(x0, y0 + 26.0), text, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, col2)
 
 
 ## 左下：速度 + 单位 + 档位
@@ -128,6 +156,32 @@ func _draw_minimap(w: float, h: float) -> void:
 		region.position.x = clampf(region.position.x, 0.0, maxf(0.0, max_px - region.size.x))
 		region.position.y = clampf(region.position.y, 0.0, maxf(0.0, max_px - region.size.y))
 		draw_texture_rect_region(map.texture, inner, region)
+		# 导航路线（只画视野内的点）
+		if route.size() >= 2:
+			var pts := PackedVector2Array()
+			var sp := inner.size.x / (MINIMAP_RANGE * 2.0)
+			for p in route:
+				var dx := p.x - px
+				var dz := p.y - pz
+				if absf(dx) > MINIMAP_RANGE or absf(dz) > MINIMAP_RANGE:
+					continue
+				pts.append(Vector2(
+					inner.position.x + inner.size.x * 0.5 + dx * sp,
+					inner.position.y + inner.size.y * 0.5 + dz * sp
+				))
+			if pts.size() >= 2:
+				draw_polyline(pts, Color(0.96, 0.79, 0.36, 0.85), 2.5)
+		# 航点
+		if waypoint != Vector2.INF:
+			var wdx := waypoint.x - px
+			var wdz := waypoint.y - pz
+			if absf(wdx) < MINIMAP_RANGE and absf(wdz) < MINIMAP_RANGE:
+				var wpos := Vector2(
+					inner.position.x + inner.size.x * 0.5 + wdx * (inner.size.x / (MINIMAP_RANGE * 2.0)),
+					inner.position.y + inner.size.y * 0.5 + wdz * (inner.size.x / (MINIMAP_RANGE * 2.0))
+				)
+				draw_circle(wpos, 5.0, Color(0.96, 0.79, 0.36, 0.9))
+				draw_circle(wpos, 2.0, Color(0.1, 0.1, 0.12, 0.9))
 		# 边框与十字准星
 		draw_rect(inner, Color(0.85, 0.66, 0.32, 0.22), false, 1.0)
 		var cx := box.position.x + box.size.x * 0.5
@@ -197,15 +251,61 @@ func _draw_notice(w: float, h: float) -> void:
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(TEXT_DIM.r, TEXT_DIM.g, TEXT_DIM.b, 0.65))
 
 
+## 大地图矩形（屏幕坐标）——绘制与点击命中共用，避免两处算法漂移
+func big_map_rect() -> Rect2:
+	var vp := get_viewport_rect().size
+	var side := minf(vp.x, vp.y) - 96.0
+	return Rect2((vp.x - side) * 0.5, (vp.y - side) * 0.5, side, side)
+
+
+## 屏幕坐标 → 世界坐标（点在大地图外返回 Vector2.INF）
+func world_at_screen(p: Vector2) -> Vector2:
+	if map == null or not show_map:
+		return Vector2.INF
+	var box := big_map_rect()
+	if not box.has_point(p):
+		return Vector2.INF
+	var u := (p.x - box.position.x) / box.size.x * float(CityMap.SIZE)
+	var v := (p.y - box.position.y) / box.size.y * float(CityMap.SIZE)
+	return map.to_world(u, v)
+
+
+func _map_to_screen(wx: float, wz: float, box: Rect2) -> Vector2:
+	var q := map.to_px(wx, wz)
+	return Vector2(
+		box.position.x + q.x / float(CityMap.SIZE) * box.size.x,
+		box.position.y + q.y / float(CityMap.SIZE) * box.size.y
+	)
+
+
+func _route_km() -> float:
+	var total := 0.0
+	for i in range(1, route.size()):
+		total += route[i].distance_to(route[i - 1])
+	return total / 1000.0
+
+
 ## 大地图（全屏）
 func _draw_big_map(w: float, h: float) -> void:
 	draw_rect(Rect2(0, 0, w, h), Color(0.02, 0.025, 0.032, 0.93))
 	if map == null or map.texture == null:
 		return
-	var side := minf(w, h) - 96.0
-	var box := Rect2((w - side) * 0.5, (h - side) * 0.5, side, side)
+	var box := big_map_rect()
 	draw_style_box(_panel_solid, box.grow(8.0))
+	draw_string(_font, Vector2(box.position.x, box.position.y - 16.0), "深圳路网 · 全城",
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 18, TEXT)
 	draw_texture_rect(map.texture, box, false)
+
+	# 导航路线与航点（世界坐标 → 地图贴图 → 屏幕）
+	if route.size() >= 2:
+		var pts := PackedVector2Array()
+		for p in route:
+			pts.append(_map_to_screen(p.x, p.y, box))
+		draw_polyline(pts, Color(0.96, 0.79, 0.36, 0.92), 3.0)
+	if waypoint != Vector2.INF:
+		var wp := _map_to_screen(waypoint.x, waypoint.y, box)
+		draw_circle(wp, 8.0, Color(0.96, 0.79, 0.36, 0.85))
+		draw_circle(wp, 3.5, Color(0.08, 0.09, 0.11, 0.95))
 
 	# 玩家位置
 	var p := map.to_px(px, pz)
@@ -216,8 +316,8 @@ func _draw_big_map(w: float, h: float) -> void:
 	_draw_arrow(local, yaw)
 	draw_circle(local, 12.0, Color(0.85, 0.66, 0.32, 0.16))
 
-	draw_string(_font, Vector2(box.position.x, box.position.y - 16.0), "深圳路网 · 全城",
-		HORIZONTAL_ALIGNMENT_LEFT, -1, 18, TEXT)
+	var hint := "左键点地图设航点 · 右键清除 · M 或 Esc 关闭"
+	if route.size() >= 2:
+		hint = "路线 %.1f km · %s" % [_route_km(), hint]
 	draw_string(_font, Vector2(box.position.x, box.position.y + box.size.y + 30.0),
-		"M 或 Esc 关闭        坐标 %.0f, %.0f" % [px, pz],
-		HORIZONTAL_ALIGNMENT_LEFT, -1, 13, TEXT_DIM)
+		hint, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, TEXT_DIM)

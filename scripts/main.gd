@@ -1,4 +1,4 @@
-## 入口：加载城市数据 → 程序化图集与材质 → 分块世界 → 驾驶主循环
+﻿## 入口：加载城市数据 → 程序化图集与材质 → 分块世界 → 驾驶主循环
 ##
 ## 按键：W/↑ 油门、S/↓ 刹车倒车、A/D/←/→ 转向、空格 手刹、
 ##       C 切视角、R 换车、M 昼夜、F3 调试信息、Esc 释放/捕获鼠标
@@ -16,6 +16,7 @@ var chase: ChaseCamera
 var audio: AudioEngine
 var peds: Pedestrians
 var traffic: Traffic
+var police: Police
 var on_foot: OnFoot
 var aircraft: Aircraft
 var aircraft_view: AircraftView
@@ -31,6 +32,14 @@ var camera: Camera3D
 var hud: Hud
 var city_map: CityMap
 var settings: SettingsPanel
+var cheat_panel: CheatPanel
+var cheats := Cheats.new()
+var _crash_cd := 0.0
+## 存档：自动存档节流 + 手动 F5/F9
+var _save_cd := 0.0
+## 地图航点导航（世界坐标）与算好的路线折线
+var waypoint := Vector2.INF
+var route := PackedVector2Array()
 var debug_label: Label
 var show_debug := false
 var show_map := false
@@ -102,6 +111,10 @@ func _ready() -> void:
 	traffic = Traffic.new()
 	add_child(traffic)
 	traffic.setup(data)
+
+	police = Police.new()
+	add_child(police)
+	police.setup(data)
 
 	on_foot = OnFoot.new()
 	add_child(on_foot)
@@ -219,6 +232,129 @@ func _notify(text: String) -> void:
 	notice_timer = 3.2
 
 
+# ============================================================================
+# 存档
+# ============================================================================
+
+
+func _collect_state() -> Dictionary:
+	return {
+		"x": vehicle.x,
+		"z": vehicle.z,
+		"yaw": vehicle.yaw,
+		"car": vehicle.spec.id,
+		"car_index": _car_index,
+		"mode": "fly" if flying else ("walk" if walking else "drive"),
+		"health": vehicle.health,
+		"pos_y": vehicle.y,
+		"cheats": cheats.to_dict(),
+		"settings": {
+			"quality": settings.quality,
+			"volume": settings.volume,
+			"sensitivity": settings.sensitivity,
+			"debug": show_debug,
+		},
+		"time_of_day": sky.time_of_day,
+		"wanted": police.wanted if police != null else 0,
+		"odometer_km": cheats.odometer / 1000.0,
+	}
+
+
+func _save_game(manual := false) -> void:
+	var ok := SaveSystem.write_state(_collect_state())
+	if manual:
+		_notify("已存档" if ok else "存档失败（见控制台）")
+
+
+func _load_game() -> void:
+	var st := SaveSystem.read_state()
+	if st.is_empty():
+		_notify("没有可用的存档")
+		return
+	# 载具
+	var car_id := str(st.get("car", "sedan"))
+	_car_index = int(st.get("car_index", 0))
+	_swap_vehicle(CarSpecs.all().find(CarSpecs.by_id(car_id)))
+	vehicle.seat(float(st.get("x", 0.0)), float(st.get("z", 0.0)), float(st.get("yaw", 0.0)))
+	vehicle.place_on_ground(data)
+	vehicle.health = float(st.get("health", 100.0))
+	# 模式
+	var mode := str(st.get("mode", "drive"))
+	walking = false
+	flying = false
+	if mode == "fly":
+		_toggle_fly()
+	elif mode == "walk":
+		_toggle_walk()
+		on_foot.place(vehicle.x + 2.0, vehicle.z, vehicle.yaw, data)
+	# 作弊与设置
+	cheats.from_dict(st.get("cheats", {}))
+	cheat_panel.invincible = cheats.invincible
+	cheat_panel.boost = cheats.boost
+	var s: Dictionary = st.get("settings", {})
+	if not s.is_empty():
+		settings.quality = int(s.get("quality", 1))
+		settings.volume = float(s.get("volume", 0.8))
+		settings.sensitivity = float(s.get("sensitivity", 1.0))
+		audio.set_volume(settings.volume)
+		chase.sensitivity = settings.sensitivity
+		_on_quality_changed(settings.quality)
+	sky.set_time(float(st.get("time_of_day", 0.42)))
+	if police != null:
+		police.heat = float(st.get("wanted", 0)) * 10.0
+	_notify("已读档：%s · %s" % [vehicle.spec.name, str(st.get("saved_at", ""))])
+
+
+# ============================================================================
+# 地图导航：点大地图设航点 → A* 算路线 → 小地图与大地图画出来
+# ============================================================================
+
+
+func _set_waypoint(world: Vector2) -> void:
+	waypoint = world
+	var graph := data.graph
+	var from := graph.closest_node(vehicle.x, vehicle.z)
+	var to := graph.closest_node(world.x, world.y)
+	if from < 0 or to < 0:
+		route = PackedVector2Array()
+		_notify("附近没有可用的路网节点")
+		return
+	var nodes := graph.path(from, to, 12000)
+	if nodes.is_empty():
+		route = PackedVector2Array()
+		_notify("算不出路线（可能被水域或断头路隔开）")
+		return
+	# path_points 返回扁平数组（x,z 交替），转成折线点
+	var flat := graph.path_points(nodes)
+	route = PackedVector2Array()
+	var i := 0
+	while i + 1 < flat.size():
+		route.append(Vector2(flat[i], flat[i + 1]))
+		i += 2
+	_notify("已规划路线：%.1f km · %d 个转向点" % [_route_length() / 1000.0, nodes.size()])
+
+
+func _route_length() -> float:
+	var total := 0.0
+	for i in range(1, route.size()):
+		total += route[i].distance_to(route[i - 1])
+	return total
+
+
+func _clear_waypoint() -> void:
+	waypoint = Vector2.INF
+	route = PackedVector2Array()
+	_notify("已清除导航")
+
+
+## 每 25 秒自动存档一次
+func _auto_save(dt: float) -> void:
+	_save_cd -= dt
+	if _save_cd <= 0.0:
+		_save_cd = 25.0
+		SaveSystem.write_state(_collect_state())
+
+
 ## 打开 / 关闭设置面板（Esc）
 func _toggle_settings() -> void:
 	if settings.visible:
@@ -236,6 +372,124 @@ func _close_settings() -> void:
 	settings.visible = false
 	input.set_mouse_captured(not show_map)
 	audio.ui_click()
+
+
+## 打开 / 关闭作弊菜单（V）
+func _toggle_cheats() -> void:
+	if cheat_panel.visible:
+		_close_cheats()
+	else:
+		cheat_panel.visible = true
+		show_map = false
+		if settings.visible:
+			settings.visible = false
+		input.set_mouse_captured(false)
+		audio.ui_click()
+
+
+func _close_cheats() -> void:
+	if not cheat_panel.visible:
+		return
+	cheat_panel.visible = false
+	input.set_mouse_captured(not show_map)
+	audio.ui_click()
+
+
+## 作弊传送：出生点 / 海边 / 市中心 / 高空 / 落地
+func _teleport(kind: String) -> void:
+	var tx := vehicle.x
+	var tz := vehicle.z
+	var ty := 0.0
+	match kind:
+		"spawn":
+			var spawn: Dictionary = data.meta["spawn"]
+			tx = spawn["x"]
+			tz = spawn["z"]
+		"sea":
+			var p := _nearest_water(data)
+			tx = p.x
+			tz = p.y
+		"center":
+			var ext: Array = data.meta.get("extent", [])
+			if ext.size() >= 4:
+				tx = (float(ext[0]) + float(ext[2])) * 0.5
+				tz = (float(ext[1]) + float(ext[3])) * 0.5
+		"sky":
+			ty = 260.0
+		"ground":
+			pass
+		_:
+			return
+
+	var surf := data.surface_at(tx, tz)
+	var base: float = float(surf["y"])
+	if kind == "sky":
+		vehicle.seat(tx, tz, vehicle.yaw)
+		vehicle.y = base + ty
+		vehicle.place_on_ground(data)
+		vehicle.y = base + ty
+	elif kind == "ground":
+		vehicle.place_on_ground(data)
+	else:
+		vehicle.seat(tx, tz, vehicle.yaw)
+		vehicle.place_on_ground(data)
+	# 人在车里 / 步行 / 飞行三种形态一起搬
+	if walking:
+		on_foot.place(vehicle.x + 2.0, vehicle.z, vehicle.yaw, data)
+	if flying:
+		aircraft.seat(vehicle.x + 8.0, base + 60.0, vehicle.z, vehicle.yaw)
+		aircraft_view.sync(aircraft)
+	_notify("已传送：" + kind)
+
+
+## 找离玩家最近的一片水域（用于「传送到海边」）
+func _nearest_water(data: CityData) -> Vector2:
+	var best := Vector2(vehicle.x, vehicle.z)
+	var best_d := 1e18
+	var tri := PackedFloat32Array()
+	for poly in data.ground_count:
+		if data.ground_layer(poly) != 2:
+			continue
+		if data.ground_tri_count(poly) == 0:
+			continue
+		tri = data.poly_triangle(poly, 0)
+		var cx := (tri[0] + tri[2] + tri[4]) / 3.0
+		var cz := (tri[1] + tri[3] + tri[5]) / 3.0
+		var dx := cx - vehicle.x
+		var dz := cz - vehicle.z
+		var d := dx * dx + dz * dz
+		if d < best_d:
+			best_d = d
+			best = Vector2(cx, cz)
+	return best
+
+
+## 作弊效果与统计：三种模式都会走到（挂在 _update_world 末尾）
+func _apply_cheats(dt: float) -> void:
+	vehicle.boost_accel = cheats.boost_accel()
+	vehicle.boost_top = cheats.boost_top()
+	if cheats.invincible and vehicle.health < 100.0:
+		vehicle.health = 100.0
+	if not walking and not flying:
+		cheats.odometer += absf(vehicle.speed()) * dt
+		cheats.top_speed_kmh = maxf(cheats.top_speed_kmh, vehicle.speed_kmh())
+		if vehicle.impact > 0.15 and _crash_cd <= 0.0:
+			cheats.crash_count += 1
+			# 撞得越狠通缉涨得越快
+			police.add_heat(1.5 + vehicle.impact * 5.0)
+			_crash_cd = 0.7
+		# 严重超速也会招来警察
+		if vehicle.speed_kmh() > 145.0:
+			police.add_heat(dt * 0.30)
+	_crash_cd = maxf(0.0, _crash_cd - dt)
+	_auto_save(dt)
+	if cheat_panel.visible:
+		cheat_panel.sync_live(sky.time_of_day, {
+			"odometer": cheats.odometer,
+			"top": cheats.top_speed_kmh,
+			"crashes": cheats.crash_count,
+			"escapes": cheats.police_escapes,
+		})
 
 
 ## 画质档位：视距 + 3D 渲染分辨率缩放 + 交通 / 行人密度
@@ -282,6 +536,37 @@ func _build_ui() -> void:
 		debug_label.visible = on
 	)
 	settings.closed.connect(_close_settings)
+
+	# 作弊菜单（破解版玩法）：独立面板，与设置面板共用居中容器
+	cheat_panel = CheatPanel.new()
+	var holder2 := CenterContainer.new()
+	holder2.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	holder2.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(holder2)
+	holder2.add_child(cheat_panel)
+	cheat_panel.invincible_toggled.connect(func(on: bool) -> void:
+		cheats.invincible = on
+		_notify("车辆无敌：" + ("开" if on else "关"))
+	)
+	cheat_panel.boost_toggled.connect(func(on: bool) -> void:
+		cheats.boost = on
+		_notify("引擎强化：" + ("开" if on else "关"))
+	)
+	cheat_panel.wanted_changed.connect(func(level: int) -> void:
+		cheats.forced_wanted = level
+		_notify("通缉星级锁定为 %d（交还玩法则按行为累积）" % level if level >= 0 else "通缉星级交还玩法控制")
+	)
+	cheat_panel.time_changed.connect(func(t: float) -> void: sky.set_time(t))
+	cheat_panel.time_fast_toggled.connect(func(on: bool) -> void:
+		sky.day_length = 24.0 if on else 240.0
+		_notify("时间快进：" + ("开（10 倍）" if on else "关"))
+	)
+	cheat_panel.teleport_requested.connect(_teleport)
+	cheat_panel.stats_reset.connect(func() -> void:
+		cheats.reset_stats()
+		_notify("统计数据已重置")
+	)
+	cheat_panel.closed.connect(_close_cheats)
 	debug_label = Label.new()
 	debug_label.position = Vector2(24, 110)
 	debug_label.offset_left = 24
@@ -294,8 +579,22 @@ func _build_ui() -> void:
 	layer.add_child(debug_label)
 
 
+func _notification(what: int) -> void:
+	# 关窗时落一次盘（自动存档间隔 25 秒，可能刚好错过）
+	if what == NOTIFICATION_WM_CLOSE_REQUEST and vehicle != null:
+		_save_game(false)
+
+
 func _input(event: InputEvent) -> void:
 	input.feed(event)
+	# 大地图打开时：左键设航点、右键清除
+	if show_map and event is InputEventMouseButton and event.pressed:
+		if event.button_index == MOUSE_BUTTON_LEFT:
+			var w := hud.world_at_screen(event.position)
+			if w != Vector2.INF:
+				_set_waypoint(w)
+		elif event.button_index == MOUSE_BUTTON_RIGHT:
+			_clear_waypoint()
 	if event is InputEventKey and event.pressed and not event.echo:
 		_on_key(event.physical_keycode)
 
@@ -316,10 +615,14 @@ func _on_key(code: int) -> void:
 			input.set_mouse_captured(not show_map)
 		KEY_N:
 			sky.toggle_day_night()
+		KEY_V:
+			_toggle_cheats()
 		KEY_ESCAPE:
 			if show_map:
 				show_map = false
 				input.set_mouse_captured(true)
+			elif cheat_panel.visible:
+				_close_cheats()
 			elif settings.visible:
 				_close_settings()
 			else:
@@ -327,6 +630,10 @@ func _on_key(code: int) -> void:
 		KEY_F3:
 			show_debug = not show_debug
 			debug_label.visible = show_debug
+		KEY_F5:
+			_save_game(true)
+		KEY_F9:
+			_load_game()
 
 
 func _swap_vehicle(index: int) -> void:
@@ -380,7 +687,36 @@ func _auto_step(dt: float) -> void:
 		820: _toggle_settings()
 		850: _save_shot("res://tmp/settings_1.png")
 		860: _close_settings()
-		870:
+		900: _toggle_cheats()
+		930: _save_shot("res://tmp/cheat_1.png")
+		940:
+			_close_cheats()
+			_teleport("spawn")
+		950:
+			if walking:
+				_toggle_walk()  # 回到车里，让警车追的是车而不是脚
+		980:
+			# 通缉测试：直接锁 3 星，看警车是否出动
+			cheats.forced_wanted = 3
+		1160:
+			chase.orbit_yaw = PI  # 回头看看追上来的警车
+		1350: _save_shot("res://tmp/police_1.png")
+		1360:
+			chase.orbit_yaw = 0.0
+		1400:
+			print("[自动驾驶] 通缉 %d 星，警车 %d 辆（最近 %.0f m），逃脱 %d 次" % [
+				police.wanted, police.chase_count(),
+				police.nearest_distance(vehicle.x, vehicle.z), police.escape_count()
+			])
+		1420:
+			show_map = true
+			_set_waypoint(Vector2(vehicle.x + 2600.0, vehicle.z - 1800.0))
+		1450: _save_shot("res://tmp/nav_1.png")
+		1460:
+			_save_game(true)
+			_notify("存档状态：" + ("已写入" if SaveSystem.has_save() else "缺失"))
+			show_map = false
+		1470:
 			print("[自动驾驶] 结束：飞机 %.0f km/h 高度 %.0f m 状态(%s) FPS %.1f 绘制 %d 三角 %d" % [
 				aircraft.speed_kmh(), aircraft.y - aircraft.ground_y(data),
 				("水面" if aircraft.on_water else ("地面" if aircraft.on_ground else "飞行")), _fps,
@@ -499,8 +835,13 @@ func _update_world(dt: float) -> void:
 		peds.update(dt, ax, az)
 	if traffic != null:
 		traffic.update(dt, ax, az, vehicle)
+	if police != null:
+		police.update(dt, ax, az, vehicle, cheats.forced_wanted)
+		audio.siren(police.siren_on and police.chase_count() > 0)
+		cheats.police_escapes = police.escape_count()
 	mats.set_night(sky.night_factor())
 	view.set_lights(sky.night_factor())
+	_apply_cheats(dt)
 
 
 func _update_hud(delta: float) -> void:
@@ -518,6 +859,12 @@ func _update_hud(delta: float) -> void:
 	hud.notice_alpha = clampf(notice_timer / 1.2, 0.0, 1.0)
 	hud.show_map = show_map
 	hud.yaw = 0.0
+	hud.route = route
+	hud.waypoint = waypoint
+	if police != null:
+		hud.wanted = police.wanted
+		hud.chasing = police.chase_count() > 0
+		hud.escaping = police.escaping
 	if flying:
 		hud.mode_text = "飞行 · 湾翼浮筒机"
 		hud.title = "湾翼 · 双浮筒观光机"
@@ -531,7 +878,7 @@ func _update_hud(delta: float) -> void:
 		hud.px = aircraft.x
 		hud.pz = aircraft.z
 		hud.yaw = aircraft.yaw
-		hud.extra_hint = "W/S 俯仰　A/D 滚转　Q/E 方向舵　Shift/Ctrl 油门　空格 刹车　B 下机　M 地图"
+		hud.extra_hint = "W/S 俯仰　A/D 滚转　Q/E 方向舵　Shift/Ctrl 油门　空格 刹车　B 下机　M 地图　V 作弊菜单　F5 存档　F9 读档"
 	elif walking:
 		hud.mode_text = "步行"
 		hud.title = "步行中"
@@ -543,7 +890,7 @@ func _update_hud(delta: float) -> void:
 		hud.px = on_foot.x
 		hud.pz = on_foot.z
 		hud.yaw = on_foot.yaw
-		hud.extra_hint = "WASD 移动　Shift 跑　F 上下车　B 上飞机　M 地图"
+		hud.extra_hint = "WASD 移动　Shift 跑　F 上下车　B 上飞机　M 地图　V 作弊菜单　F5 存档　F9 读档"
 	else:
 		hud.mode_text = "驾驶"
 		hud.title = vehicle.spec.name
@@ -555,7 +902,7 @@ func _update_hud(delta: float) -> void:
 		hud.px = vehicle.x
 		hud.pz = vehicle.z
 		hud.yaw = vehicle.yaw
-		hud.extra_hint = "WASD 驾驶　空格 手刹　C 视角　R 换车　F 下车　B 上飞机　M 地图"
+		hud.extra_hint = "WASD 驾驶　空格 手刹　C 视角　R 换车　F 下车　B 上飞机　M 地图　V 作弊菜单　F5 存档　F9 读档"
 	hud.queue_redraw()
 	if show_debug:
 		var px := on_foot.x if walking else (aircraft.x if flying else vehicle.x)
