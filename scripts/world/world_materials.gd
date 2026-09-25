@@ -42,5 +42,13 @@ func set_night(v: float) -> void:
 	glow.set_shader_parameter("strength", 0.25 + _night * 1.5)
 
 
+## 城市材质里的「假天光反射」：顶色 / 地平线色 / 强度（由 SkyRig 的当前天空色每帧喂入）
+## 替代被关闭的天空反射探针 —— 见 sky.gd 与 city.gdshader 里的性能说明
+func set_sky_reflection(top: Color, horizon: Color, energy: float) -> void:
+	city.set_shader_parameter("sky_top", Vector3(top.r, top.g, top.b))
+	city.set_shader_parameter("sky_horizon", Vector3(horizon.r, horizon.g, horizon.b))
+	city.set_shader_parameter("sky_reflect", energy)
+
+
 func night() -> float:
 	return _night

@@ -265,9 +265,11 @@ func _refresh() -> void:
 		var b: Button = _quality_buttons[i]
 		b.button_pressed = i == quality
 		b.add_theme_color_override("font_color", GOLD if i == quality else TEXT)
-	_desc_label.text = "%s：视距 %.0f m · 渲染分辨率 %d%% · 车流 %d 辆 · 行人 %d 人" % [
+	_desc_label.text = "%s：视距 %.0f m · 渲染分辨率 %d%%%s · 车流 %d 辆 · 行人 %d 人" % [
 		QUALITY_NAMES[quality], QUALITY_LOD[quality],
-		int(QUALITY_SCALE[quality] * 100.0), QUALITY_TRAFFIC[quality], QUALITY_PEDS[quality]
+		int(QUALITY_SCALE[quality] * 100.0),
+		"（FSR 上采样）" if QUALITY_SCALE[quality] < 0.999 else "",
+		QUALITY_TRAFFIC[quality], QUALITY_PEDS[quality]
 	]
 
 

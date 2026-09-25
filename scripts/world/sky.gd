@@ -41,8 +41,13 @@ func _ready() -> void:
 
 	e.background_mode = Environment.BG_SKY
 	e.sky = sky
-	e.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	e.ambient_light_sky_contribution = 1.0
+	# 环境光走「纯色 + 随昼夜调色」，并关掉天空反射探针：
+	# 天空间接光探针在核显上实测吃掉约 13 ms/帧（3200×2000 全屏：31 → 52 FPS）——
+	# 它要每帧重烘焙一次立方体（实时模式），再让每个像素采样一次立方体贴图。
+	# 天空本身的反射改由 city.gdshader 的解析式「假天光」补偿，观感基本一致。
+	e.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	e.ambient_light_sky_contribution = 0.0
+	e.reflected_light_source = Environment.REFLECTION_SOURCE_DISABLED
 	e.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 	e.tonemap_exposure = 1.1
 	e.tonemap_white = 6.0
@@ -107,8 +112,10 @@ func _apply() -> void:
 
 	var e := env.environment
 	# 白天适当压低环境光（让太阳方向性更明显、明暗对比更强）；
-	# 夜间不要压太狠 —— 城市有大量环境光污染，纯黑反而假
+	# 夜间不要压太狠 —— 城市有大量环境光污染，纯黑反而假。
+	# 颜色由天空色混合而来：原来由天空探针提供的「上蓝下暖」渐变，这里用一次 lerp 近似
 	e.ambient_light_energy = lerpf(0.74, 0.72, _night)
+	e.ambient_light_color = sky.ground_horizon_color.lerp(sky.sky_top_color, 0.45)
 	e.fog_light_color = sky.sky_horizon_color.lerp(Color(0.52, 0.57, 0.65), 0.32)
 	e.fog_light_energy = lerpf(0.9, 0.55, _night)
 	e.tonemap_exposure = lerpf(1.12, 1.06, _night)

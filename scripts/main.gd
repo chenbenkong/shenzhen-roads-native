@@ -54,6 +54,7 @@ var _fps := 0.0
 var _autodrive := false
 var _auto_time := 0.0
 var _auto_frame := 0
+var _auto_t0 := 0
 var _auto_throttle := 0.0
 var _auto_steer := 0.0
 
@@ -128,6 +129,8 @@ func _ready() -> void:
 	aircraft_view.visible = false
 
 	_build_ui()
+	# 全新启动（没有存档）时也要把画质档位真正落地：渲染缩放 / FSR / 视距 / 车流行人上限
+	_on_quality_changed(settings.quality, false)
 
 	# 城市地图烘焙：GPU 一次成图（SubViewport 渲染后取回），小地图与大地图共用
 	city_map = await CityMap.bake(get_tree(), data)
@@ -138,9 +141,39 @@ func _ready() -> void:
 	var args := OS.get_cmdline_user_args()
 	_autodrive = args.has("autodrive")
 	# 命令行覆盖渲染缩放：`-- scale=0.6`（用于性能实测与低配机预设）
+	# `-- fsr=0.6`：同上，但改用 FSR 1.0 上采样（锐度接近原生，代价略高）
+	# `-- nosky` / `-- nofog`：性能诊断开关，分别压掉程序化天空 + 天空环境光探针、距离雾
 	for a in args:
-		if str(a).begins_with("scale="):
-			get_viewport().scaling_3d_scale = clampf(float(str(a).substr(6)), 0.4, 1.0)
+		var s := str(a)
+		if s.begins_with("scale="):
+			get_viewport().scaling_3d_mode = Viewport.SCALING_3D_MODE_BILINEAR
+			get_viewport().scaling_3d_scale = clampf(float(s.substr(6)), 0.4, 1.0)
+		elif s.begins_with("fsr="):
+			get_viewport().scaling_3d_mode = Viewport.SCALING_3D_MODE_FSR
+			get_viewport().scaling_3d_scale = clampf(float(s.substr(4)), 0.4, 1.0)
+		elif s == "nosky":
+			var se := sky.env.environment
+			se.background_mode = Environment.BG_COLOR
+			se.background_color = Color(0.62, 0.71, 0.86)
+			se.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+			se.ambient_light_color = Color(0.62, 0.71, 0.86)
+			se.ambient_light_energy = 0.74
+		elif s == "noprobe":
+			# 保留可见天空，但环境光改用固定颜色、关掉天空反射：
+			# 用于量化「每帧重烘焙天空间接光探针 + 逐像素探针采样」的开销
+			var pe := sky.env.environment
+			pe.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+			pe.ambient_light_color = Color(0.62, 0.71, 0.86)
+			pe.ambient_light_energy = 0.74
+			pe.reflected_light_source = Environment.REFLECTION_SOURCE_DISABLED
+		elif s == "probe":
+			# 反向开关：把天空环境光探针重新打开，用于验证「关掉探针」的收益
+			var qe := sky.env.environment
+			qe.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
+			qe.ambient_light_sky_contribution = 1.0
+			qe.reflected_light_source = Environment.REFLECTION_SOURCE_BG
+		elif s == "nofog":
+			sky.env.environment.fog_enabled = false
 	# nofx：关掉行人 / 车流，用于帧率基线对比
 	if args.has("nofx"):
 		peds.queue_free()
@@ -302,7 +335,7 @@ func _load_game() -> void:
 		settings.sensitivity = float(s.get("sensitivity", 1.0))
 		audio.set_volume(settings.volume)
 		chase.sensitivity = settings.sensitivity
-		_on_quality_changed(settings.quality)
+		_on_quality_changed(settings.quality, false)
 	sky.set_time(float(st.get("time_of_day", 0.42)))
 	if police != null:
 		police.heat = float(st.get("wanted", 0)) * 10.0
@@ -497,13 +530,21 @@ func _apply_cheats(dt: float) -> void:
 
 
 ## 画质档位：视距 + 3D 渲染分辨率缩放 + 交通 / 行人密度
-func _on_quality_changed(index: int) -> void:
+func _on_quality_changed(index: int, notify_change := true) -> void:
 	_lod_distance = settings.lod_distance()
-	get_viewport().scaling_3d_scale = settings.render_scale()
+	var vp := get_viewport()
+	# 渲染分辨率低于 100% 时用 FSR 1.0 上采样：同档位下开销与双线性一致，
+	# 但纹理、路面标线、窗框边缘锐利得多（实测 3200×2000 / 60% 档：43.3 vs 43.4 FPS）
+	var scale := settings.render_scale()
+	vp.scaling_3d_mode = (Viewport.SCALING_3D_MODE_FSR if scale < 0.999
+		else Viewport.SCALING_3D_MODE_BILINEAR)
+	vp.scaling_3d_scale = scale
 	if traffic != null:
 		traffic.max_active = settings.traffic_cap()
 	if peds != null:
 		peds.max_active = settings.ped_cap()
+	if not notify_change:
+		return
 	_notify("画质 %s · 视距 %.0f m · 渲染分辨率 %d%%" % [
 		SettingsPanel.QUALITY_NAMES[index],
 		settings.lod_distance(),
@@ -721,9 +762,13 @@ func _auto_step(dt: float) -> void:
 			_notify("存档状态：" + ("已写入" if SaveSystem.has_save() else "缺失"))
 			show_map = false
 		1470:
-			print("[自动驾驶] 结束：飞机 %.0f km/h 高度 %.0f m 状态(%s) FPS %.1f 绘制 %d 三角 %d" % [
+			# 全程平均帧率：核显笔记本长时间满载会降频，末尾 0.5 秒的瞬时值噪声很大，
+			# 平均帧率用于跨版本对比更可靠（两处一起看：差值一致才算真收益）
+			var elapsed := float(Time.get_ticks_usec() - _auto_t0) / 1000000.0
+			print("[自动驾驶] 结束：飞机 %.0f km/h 高度 %.0f m 状态(%s) FPS %.1f 平均 %.1f 绘制 %d 三角 %d" % [
 				aircraft.speed_kmh(), aircraft.y - aircraft.ground_y(data),
 				("水面" if aircraft.on_water else ("地面" if aircraft.on_ground else "飞行")), _fps,
+				float(_auto_frame - 1) / maxf(elapsed, 0.001),
 				Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME),
 				Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME)
 			])
@@ -734,6 +779,8 @@ func _process(delta: float) -> void:
 	var dt := minf(delta, 0.05)
 	input.poll()
 	if _autodrive:
+		if _auto_t0 == 0:
+			_auto_t0 = Time.get_ticks_usec()
 		_auto_step(dt)
 
 	# ── 操控 ──
@@ -843,8 +890,12 @@ func _update_world(dt: float) -> void:
 		police.update(dt, ax, az, vehicle, cheats.forced_wanted)
 		audio.siren(police.siren_on and police.chase_count() > 0)
 		cheats.police_escapes = police.escape_count()
-	mats.set_night(sky.night_factor())
-	view.set_lights(sky.night_factor())
+	var night_f := sky.night_factor()
+	mats.set_night(night_f)
+	# 城市材质的「假天光反射」跟着当前天空色走，夜里压到四成（避免夜色路面泛白）
+	mats.set_sky_reflection(sky.sky_material.sky_top_color, sky.sky_material.sky_horizon_color,
+		lerpf(1.0, 0.40, night_f))
+	view.set_lights(night_f)
 	_apply_cheats(dt)
 
 
